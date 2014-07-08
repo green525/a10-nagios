@@ -103,7 +103,12 @@ def do_exit(state, msg):
 ## AUTHENTICATE AGAINST THE LB TO GET A SESSION ID
 c = httplib.HTTPSConnection(loadbalancer)
 sessionurl = "/services/rest/V2/?method=authenticate&username=%s&password=%s&format=json" % (user, password)
-c.request("GET", sessionurl)
+try:
+    c.request("GET", sessionurl)
+except Exception, err:
+    print("Connection Failed to: https://" + loadbalancer + sessionurl + "\nError: " + str(err))
+    sys.exit(1)
+
 response = c.getresponse()
 data = json.loads(response.read())
 # Try and assign the session_id variable from what was returned to us from the LB.
