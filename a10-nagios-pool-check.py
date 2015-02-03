@@ -102,18 +102,21 @@ def do_exit(state, msg):
 
 ## AUTHENTICATE AGAINST THE LB TO GET A SESSION ID
 c = httplib.HTTPSConnection(loadbalancer)
-sessionurl = "/services/rest/V2/?method=authenticate&username=%s&password=%s&format=json" % (user, password)
+apiurl = "/axapi/v3"
+authurl = apiurl + "/auth"
+authinfo = { 'credentials': { 'username': user, 'password': password } }
+headers = { 'Content-type': 'application/json' }
 try:
-    c.request("GET", sessionurl)
+    c.request("POST", authurl, json.dumps(authinfo), headers)
 except Exception, err:
-    print("Connection Failed to: https://" + loadbalancer + sessionurl + "\nError: " + str(err))
+    print("Connection Failed to: https://" + loadbalancer + url + "\nError: " + str(err))
     sys.exit(1)
 
 response = c.getresponse()
 data = json.loads(response.read())
 # Try and assign the session_id variable from what was returned to us from the LB.
 try:
-    session_id = data['session_id']
+    session_id = data['authresponse']['signature']
     if debug == True:
         print "Session Created. Session ID: " + session_id
 # If the data isn't there for assigning (ie. Connection or Auth error) we'll get a KeyError instead.
@@ -121,25 +124,30 @@ except KeyError:
     errmsg = "Failed to connect/auth against Loadbalancer %s" % loadbalancer
     do_exit(3, errmsg)
 
+headers['Authorization'] = "A10 " + session_id
+
 ## If 'listonly' is defined as True, we'll just list the available 'slb.service_group' data, and exit
 ## NOTE: This is only for initial use when trying to work out which SLB GID's you want to monitor-
 ## Therefore, this doesn't provide nice output really!
 if listonly == True:
-    c = httplib.HTTPSConnection(loadbalancer)
-    sessionurl = "/services/rest/V2/?session_id=" + session_id + "&method=&format=json&method=slb.service_group.getAll"
-    c.request("GET", sessionurl)
+    c.request("GET", apiurl + "/slb/service-group/", "", headers)
     response = c.getresponse()
     data = json.loads(response.read())
     try:
-        response = data['response']
-        status = str(response['status'])
-        message = str(response['err']['msg'])
-        if status == "fail":
-            print("Failed to obtain data. Error was: %s - %s" % (status, message))
-            sys.exit(1)
-        print(response)
+        sglist = data['service-group-list']
     except KeyError:
-        print("Failed to connect/auth against Loadbalancer %s" % loadbalancer)
+        print("No data received from Loadbalancer %s" % loadbalancer)
         sys.exit(1)
+else:
+    sglist = [ { 'name': slbgroupid } ]
 
-## Now for the real code: ...
+for item in sglist:
+    c.request("GET", apiurl + "/slb/service-group/" + item['name'] + "/oper", "", headers)
+    response = c.getresponse()
+    data = json.loads(response.read())
+    try:
+        group = data['service-group']['oper']
+        print "%-20s %-10s %s/%s" % (item['name'], group['state'], group['servers_up'], group['servers_total'])
+    except KeyError:
+        print("Invalid data from Loadbalancer %s" % loadbalancer)
+        sys.exit(1)
