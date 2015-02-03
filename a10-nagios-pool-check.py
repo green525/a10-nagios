@@ -18,31 +18,29 @@ ssl.SSLSocket.__init__ = new_ssl_fix
 ## Define a 'Usage' page which displays details on how to use this code.
 def usage():
     print("")
-    print("Usage: %s -u <username> -p <password> -h <loadbalancer> [-l] [-g <slb_group_id>] [-c <PERCENT>] [-w <PERCENT>] [-n <NAME>]" % sys.argv[0])
+    print("Usage: %s -u <username> -p <password> -h <loadbalancer> [-g <slb_group_id>] [-c <PERCENT>] [-w <PERCENT>] [-P <partition>]" % sys.argv[0])
     print("")
     print("    -u <username>		=> Username to authenticate against the A10")
     print("    -p <password>		=> Password to authenticate against the A10")
     print("    -h <loadbalancer>	=> A10's Hostname or IP to Connect to")
-    print("    -l			=> List available VRRIDS")
-    print("    -g <slb_service_group_ID>")
-    print("				=> Report on statistics for a single SLB Service Group")
+    print("    -g <slb_group_id>	=> Report on statistics for a single SLB Service Group")
+    print("    -P <partition>	        => Use a specific partition instead of user's default partition/shared")
     print("    -c <PERCENTAGE>		=> Percentage of remaining active nodes to report Critical Status on")
     print("    -w <PERCENTAGE>		=> Percentage of remaining active node to report Warning Status on")
-    print("    -n <NAME>		=> Friendly name for the VRRID for alerting.")
     print("    -d			=> Enable Debug")
     print("")
     sys.exit(1)
 
 ## Parse the arguments a user has given us
 try:
-    myopts, args = getopt.getopt(sys.argv[1:],"u:p:h:lg:c:w:n:d")
+    myopts, args = getopt.getopt(sys.argv[1:],"u:p:h:g:c:w:dP:")
 except getopt.GetoptError:
     usage()
 
 ## Set some initial values for some of our variables, before we potentially
 ## overwrite them with user options
-listonly = False
 user, password, loadbalancer, slbgroupid = "", "", "", ""
+partition = ""
 warn = 80
 crit = 50
 debug = False
@@ -56,16 +54,14 @@ for o, a in myopts:
         password = str(a)
     elif o == '-h':
         loadbalancer = str(a)
-    elif o == '-l':
-        listonly = True
     elif o == '-g':
 	slbgroupid = str(a)
     elif o == '-c':
         crit = str(a)
     elif o == '-w':
         warn = str(a)
-    elif o == '-n':
-        name = str(a)
+    elif o == '-P':
+        partition = str(a)
     elif o == '-d':
         debug = True
     else:
@@ -74,15 +70,9 @@ for o, a in myopts:
         usage()
 
 ## Now we've checked the user's arguments, make sure they've at least given us the basics.
-for x in user, password, loadbalancer:
+for x in user, password, loadbalancer, slbgroupid:
     if x == "":
         usage()
-
-## Validate that at EITHER 'slbgroupid' OR 'listonly' have been requested - but not none, or both.
-if slbgroupid == "" and listonly == False:
-    usage()
-if slbgroupid != "" and listonly == True:
-    usage()
 
 ## do_exit  -- Used for exiting in a 'Nagios Compliant' way later:
 def do_exit(state, msg):
@@ -109,11 +99,9 @@ headers = { 'Content-type': 'application/json' }
 try:
     c.request("POST", authurl, json.dumps(authinfo), headers)
 except Exception, err:
-    print("Connection Failed to: https://" + loadbalancer + url + "\nError: " + str(err))
-    sys.exit(1)
+    do_exit(3, "Connection Failed to: https://" + loadbalancer + url + ": " + str(err))
 
-response = c.getresponse()
-data = json.loads(response.read())
+data = json.loads(c.getresponse().read())
 # Try and assign the session_id variable from what was returned to us from the LB.
 try:
     session_id = data['authresponse']['signature']
@@ -126,28 +114,25 @@ except KeyError:
 
 headers['Authorization'] = "A10 " + session_id
 
-## If 'listonly' is defined as True, we'll just list the available 'slb.service_group' data, and exit
-## NOTE: This is only for initial use when trying to work out which SLB GID's you want to monitor-
-## Therefore, this doesn't provide nice output really!
-if listonly == True:
-    c.request("GET", apiurl + "/slb/service-group/", "", headers)
-    response = c.getresponse()
-    data = json.loads(response.read())
+# Change active partition
+if partition != "":
+    c.request("POST", apiurl + "/active-partition/" + partition, "", headers)
     try:
-        sglist = data['service-group-list']
+        data = json.loads(c.getresponse().read())
+        if data['response']['status'] != 'OK':
+            do_exit(1, "Could not change to partition " + partition)
     except KeyError:
-        print("No data received from Loadbalancer %s" % loadbalancer)
-        sys.exit(1)
-else:
-    sglist = [ { 'name': slbgroupid } ]
+        do_exit(3, "Invalid response from Loadbalancer")
 
-for item in sglist:
-    c.request("GET", apiurl + "/slb/service-group/" + item['name'] + "/oper", "", headers)
-    response = c.getresponse()
-    data = json.loads(response.read())
-    try:
-        group = data['service-group']['oper']
-        print "%-20s %-10s %s/%s" % (item['name'], group['state'], group['servers_up'], group['servers_total'])
-    except KeyError:
-        print("Invalid data from Loadbalancer %s" % loadbalancer)
-        sys.exit(1)
+# Get status
+c.request("GET", apiurl + "/slb/service-group/" + slbgroupid + "/oper", "", headers)
+data = json.loads(c.getresponse().read())
+try:
+    group = data['service-group']['oper']
+    print "%s/%s %s %s/%s" % (partition, slbgroupid, group['state'], group['servers_up'], group['servers_total'])
+except KeyError:
+    print("Invalid data from Loadbalancer %s" % loadbalancer)
+    sys.exit(1)
+
+c.request("GET", apiurl + "/logoff")
+c.getresponse()
