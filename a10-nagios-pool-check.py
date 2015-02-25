@@ -134,5 +134,5 @@ except KeyError:
     print("Invalid data from Loadbalancer %s" % loadbalancer)
     sys.exit(1)
 
-c.request("GET", apiurl + "/logoff")
+c.request("POST", apiurl + "/logoff", "", headers)
 c.getresponse()
